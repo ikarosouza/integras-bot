@@ -1,20 +1,26 @@
 package br.gov.service;
 
+import br.gov.domain.Specialty;
 import br.gov.domain.TwilioMessage;
 import br.gov.domain.UbsChatbotOptions;
+import br.gov.repository.SpecialtyRepository;
 import com.twilio.Twilio;
 import com.twilio.rest.api.v2010.account.Message;
 import com.twilio.type.PhoneNumber;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class WhatsappService {
 
     @Inject
-    SessionManager sessionManager; // Gerenciador de sessões
+    SessionManager sessionManager;
+
+    @Inject
+    SpecialtyRepository specialtyRepository; // Repositório de especialidades
 
     @ConfigProperty(name = "twilio.account_sid")
     String accountSid;
@@ -30,22 +36,17 @@ public class WhatsappService {
         Twilio.init(accountSid, authToken);
     }
 
-    // Processa a mensagem recebida do Twilio
     public void processReceivedMessage(TwilioMessage message) {
         String userId = message.getFrom();
         boolean isFirstInteraction = sessionManager.isFirstInteraction(userId);
 
-        // Gera a resposta com base na interação
         String responseMessage = generateResponse(message.getBody(), isFirstInteraction);
 
-        // Atualiza o tempo da última interação do usuário
         sessionManager.updateInteractionTime(userId);
 
-        // Enviar uma resposta ao usuário
         sendMessage(userId, responseMessage);
     }
 
-    // Método para enviar a mensagem ao usuário
     public void sendMessage(String to, String body) {
         Message message = Message.creator(
             new PhoneNumber(to),
@@ -55,55 +56,54 @@ public class WhatsappService {
         System.out.println("Mensagem enviada: " + message.getSid());
     }
 
-    // Gera a resposta ao usuário com base se é a primeira interação ou não
     public String generateResponse(String userInput, boolean isFirstInteraction) {
-        return checkAndSendWelcomeMessage(userInput, isFirstInteraction);
-    }
-
-    // Verificar se a mensagem é de boas-vindas
-    public String checkAndSendWelcomeMessage(String userInput, boolean isFirstInteraction) {
         if (isFirstInteraction || userInput.equalsIgnoreCase("iniciar") || userInput.equalsIgnoreCase("olá") || userInput.equalsIgnoreCase("oi")) {
             return getWelcomeMessage();
         }
-        return processUserInput(userInput);  // Processa a mensagem normalmente se não for de boas-vindas
+        return processUserInput(userInput);
     }
 
-    // Gera a mensagem de boas-vindas
     private String getWelcomeMessage() {
         StringBuilder message = new StringBuilder();
-        // Mensagem de boas-vindas
-        message.append("Bem-vindo à UBS Manoel Salustino! "
-            + "Aqui estão as opções disponíveis:\n");
+        message.append("Bem-vindo à UBS Manoel Salustino! Aqui estão as opções disponíveis:\n");
 
-        // Listar as opções do enum
         for (UbsChatbotOptions option : UbsChatbotOptions.values()) {
-            message.append(option.getId())
-                .append(" - ")
-                .append(option.getDescription())
-                .append("\n");
+            message.append(option.getId()).append(" - ").append(option.getDescription()).append("\n");
         }
 
         return message.toString();
     }
 
-    // Processa a entrada do usuário para identificar a opção escolhida
     public String processUserInput(String userInput) {
         try {
             int optionId = Integer.parseInt(userInput);
             for (UbsChatbotOptions option : UbsChatbotOptions.values()) {
                 if (option.getId() == optionId) {
+                    if (option == UbsChatbotOptions.AGENDAR_CONSULTA) {
+                        return listSpecialties();
+                    }
                     return handleOption(option);
                 }
             }
         } catch (NumberFormatException e) {
-            for (UbsChatbotOptions option : UbsChatbotOptions.values()) {
-                if (userInput.equalsIgnoreCase(option.name())) {
-                    return handleOption(option);
-                }
+            if (userInput.equalsIgnoreCase("voltar")) {
+                return getWelcomeMessage(); // Voltar à lista inicial
             }
+            // Outra lógica, se necessário
+        }
+        return "Desculpe, não entendi sua solicitação. Por favor, escolha uma das opções.";
+    }
+
+    private String listSpecialties() {
+        List<Specialty> specialties = specialtyRepository.listAllSpecialties();
+        StringBuilder response = new StringBuilder("Escolha uma especialidade:\n");
+
+        for (int i = 0; i < specialties.size(); i++) {
+            response.append(i + 1).append(" - ").append(specialties.get(i).getName()).append("\n");
         }
 
-        return "Desculpe, não entendi sua solicitação. Por favor, escolha uma das opções.";
+        response.append("Digite 'voltar' para retornar à lista inicial.");
+        return response.toString();
     }
 
     private String handleOption(UbsChatbotOptions option) {
@@ -111,7 +111,7 @@ public class WhatsappService {
             case CONSULTA_HORARIOS:
                 return "Os horários de atendimento são de segunda a sexta das 08:00 às 17:00.";
             case AGENDAR_CONSULTA:
-                return "Para agendar uma consulta, por favor forneça o seu nome completo e a data desejada.";
+                return listSpecialties(); // Redireciona para a lista de especialidades
             case AGENDAR_EXAME:
                 return "Para agendar um exame, informe o tipo de exame e sua data preferida.";
             case INFORMACOES_SERVICOS:
