@@ -1,26 +1,20 @@
 package br.gov.service;
 
-import br.gov.domain.Specialty;
 import br.gov.domain.TwilioMessage;
-import br.gov.domain.UbsChatbotOptions;
-import br.gov.repository.SpecialtyRepository;
+import br.gov.utils.UbsChatbotOptions;
+import br.gov.utils.MessageConstants;
+import br.gov.domain.User;
+import br.gov.repository.UserRepository;
 import com.twilio.Twilio;
 import com.twilio.rest.api.v2010.account.Message;
 import com.twilio.type.PhoneNumber;
-import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.List;
+import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class WhatsappService {
-
-    @Inject
-    SessionManager sessionManager;
-
-    @Inject
-    SpecialtyRepository specialtyRepository; // Repositório de especialidades
 
     @ConfigProperty(name = "twilio.account_sid")
     String accountSid;
@@ -31,23 +25,50 @@ public class WhatsappService {
     @ConfigProperty(name = "twilio.whatsapp_from")
     String whatsappFrom;
 
-    @PostConstruct
-    public void init() {
-        Twilio.init(accountSid, authToken);
-    }
+    @Inject
+    ChatbotNavigationService navigationService;
+
+    @Inject
+    SessionManager sessionManager;
+
+    @Inject
+    UserRepository userRepository;
 
     public void processReceivedMessage(TwilioMessage message) {
         String userId = message.getFrom();
-        boolean isFirstInteraction = sessionManager.isFirstInteraction(userId);
+        User user = userRepository.findByWhatsappId(userId);
 
-        String responseMessage = generateResponse(message.getBody(), isFirstInteraction);
+        String responseMessage;
 
-        sessionManager.updateInteractionTime(userId);
+        if (user == null && !sessionManager.isAwaitingName(userId)) {
+            // Primeira mensagem: solicita o nome do usuário
+            responseMessage = MessageConstants.SOLICITAR_NOME;
+            sessionManager.updateInteractionTime(userId);
+            sessionManager.setAwaitingName(userId, true); // Indica que está aguardando o nome
+        } else if (sessionManager.isAwaitingName(userId)) {
+            // Se estamos aguardando o nome, chamamos addNewUser para salvar
+            addNewUser(userId, message.getBody());
+            responseMessage = getWelcomeMessage(message.getBody());
+            sessionManager.setAwaitingName(userId, false); // Remove o estado de espera do nome
+        } else if (sessionManager.isFirstInteraction(userId) || message.getBody().equalsIgnoreCase("ola")) {
+            responseMessage = getWelcomeMessage(user.getName());
+        } else {
+            responseMessage = navigationService.handleUserInput(userId, message.getBody());
+        }
 
         sendMessage(userId, responseMessage);
     }
 
+    @Transactional
+    public void addNewUser(String userId, String userName) {
+        User user = new User();
+        user.setWhatsappId(userId);
+        user.setName(userName);
+        userRepository.persist(user);
+    }
+
     public void sendMessage(String to, String body) {
+        Twilio.init(accountSid, authToken);
         Message message = Message.creator(
             new PhoneNumber(to),
             new PhoneNumber(whatsappFrom),
@@ -56,74 +77,15 @@ public class WhatsappService {
         System.out.println("Mensagem enviada: " + message.getSid());
     }
 
-    public String generateResponse(String userInput, boolean isFirstInteraction) {
-        if (isFirstInteraction || userInput.equalsIgnoreCase("iniciar") || userInput.equalsIgnoreCase("olá") || userInput.equalsIgnoreCase("oi")) {
-            return getWelcomeMessage();
-        }
-        return processUserInput(userInput);
-    }
-
-    private String getWelcomeMessage() {
+    private String getWelcomeMessage(String userName) {
         StringBuilder message = new StringBuilder();
-        message.append("Bem-vindo à UBS Manoel Salustino! Aqui estão as opções disponíveis:\n");
+        message.append(String.format(MessageConstants.BEM_VINDO + ", %s! "
+            + MessageConstants.MENU_PRINCIPAL + "\n", userName));
 
         for (UbsChatbotOptions option : UbsChatbotOptions.values()) {
             message.append(option.getId()).append(" - ").append(option.getDescription()).append("\n");
         }
 
         return message.toString();
-    }
-
-    public String processUserInput(String userInput) {
-        try {
-            int optionId = Integer.parseInt(userInput);
-            for (UbsChatbotOptions option : UbsChatbotOptions.values()) {
-                if (option.getId() == optionId) {
-                    if (option == UbsChatbotOptions.AGENDAR_CONSULTA) {
-                        return listSpecialties();
-                    }
-                    return handleOption(option);
-                }
-            }
-        } catch (NumberFormatException e) {
-            if (userInput.equalsIgnoreCase("voltar")) {
-                return getWelcomeMessage(); // Voltar à lista inicial
-            }
-            // Outra lógica, se necessário
-        }
-        return "Desculpe, não entendi sua solicitação. Por favor, escolha uma das opções.";
-    }
-
-    private String listSpecialties() {
-        List<Specialty> specialties = specialtyRepository.listAllSpecialties();
-        StringBuilder response = new StringBuilder("Escolha uma especialidade:\n");
-
-        for (int i = 0; i < specialties.size(); i++) {
-            response.append(i + 1).append(" - ").append(specialties.get(i).getName()).append("\n");
-        }
-
-        response.append("Digite 'voltar' para retornar à lista inicial.");
-        return response.toString();
-    }
-
-    private String handleOption(UbsChatbotOptions option) {
-        switch (option) {
-            case CONSULTA_HORARIOS:
-                return "Os horários de atendimento são de segunda a sexta das 08:00 às 17:00.";
-            case AGENDAR_CONSULTA:
-                return listSpecialties(); // Redireciona para a lista de especialidades
-            case AGENDAR_EXAME:
-                return "Para agendar um exame, informe o tipo de exame e sua data preferida.";
-            case INFORMACOES_SERVICOS:
-                return "A UBS oferece consultas médicas, exames de rotina e vacinação.";
-            case FALAR_ATENDENTE:
-                return "Você será conectado com um atendente em breve.";
-            case LOCALIZACAO_UBS:
-                return "A UBS está localizada na Rua Exemplo, número 123.";
-            case HORARIOS_VACINACAO:
-                return "Os horários de vacinação são das 09:00 às 16:00.";
-            default:
-                return "Opção inválida.";
-        }
     }
 }

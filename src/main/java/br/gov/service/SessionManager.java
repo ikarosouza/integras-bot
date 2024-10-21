@@ -6,6 +6,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
+import java.util.Map;
 
 @ApplicationScoped
 public class SessionManager {
@@ -14,6 +16,16 @@ public class SessionManager {
     UserSessionRepository userSessionRepository;
 
     private static final long SESSION_TIMEOUT_MINUTES = 5; // 5 minutos de timeout
+
+    private Map<String, Boolean> awaitingNameMap = new HashMap<>();
+
+    public boolean isAwaitingName(String userId) {
+        return awaitingNameMap.getOrDefault(userId, false);
+    }
+
+    public void setAwaitingName(String userId, boolean awaiting) {
+        awaitingNameMap.put(userId, awaiting);
+    }
 
     // Verifica se a interação é uma nova sessão
     public boolean isFirstInteraction(String userId) {
